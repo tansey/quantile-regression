@@ -55,7 +55,8 @@ def fit_quantiles(X, y, quantiles=0.5,
                     batch_size=None, target_batch_pct=0.01,
                     min_batch_size=20, max_batch_size=100,
                     verbose=False, lr=1e-1, weight_decay=0.0, patience=5,
-                    init_model=None, splits=None, file_checkpoints=True, **kwargs):
+                    init_model=None, splits=None, file_checkpoints=True,
+                    clip_gradients=False, **kwargs):
     if file_checkpoints:
         import uuid
         tmp_file = '/tmp/tmp_file_' + str(uuid.uuid4())
@@ -143,7 +144,8 @@ def fit_quantiles(X, y, quantiles=0.5,
             loss.backward()
 
             # Clip the gradients
-            # clip_gradient(model)
+            if clip_gradients:
+                clip_gradient(model)
 
             # Apply the update
             # [p for p in model.parameters() if p.requires_grad]
