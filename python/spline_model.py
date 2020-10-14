@@ -7,6 +7,8 @@ class QuantileSpline:
     def __init__(self, quantiles=0.5, df=3):
         self.quantiles = quantiles
         self.df = df
+        self.label = 'Quantile Spline'
+        self.filename = 'spline'
 
     def fit(self, X, y):
         # Build the design matrix via a tensor basis expansion of natural spline bases

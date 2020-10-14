@@ -1,5 +1,5 @@
 '''
-A basic NN that optimizes the quantile loss for potentially-multiple quantiles.
+A basic NN that optimizes mean squared error.
 '''
 import numpy as np
 import os
@@ -12,10 +12,10 @@ from utils import create_folds, batches
 from torch_utils import clip_gradient, logsumexp
 
 
-'''Neural network to map from X to quantile(s) of y.'''
-class QuantileNetworkModule(nn.Module):
-    def __init__(self, X_means, X_stds, y_mean, y_std, n_out):
-        super(QuantileNetworkModule, self).__init__()
+'''Neural network to map from X to expectation of y.'''
+class SqErrNetworkModule(nn.Module):
+    def __init__(self, X_means, X_stds, y_mean, y_std, n_out=1):
+        super(SqErrNetworkModule, self).__init__()
         self.X_means = X_means
         self.X_stds = X_stds
         self.y_mean = y_mean
@@ -32,8 +32,7 @@ class QuantileNetworkModule(nn.Module):
                 nn.ReLU(),
                 nn.BatchNorm1d(200),
                 nn.Linear(200, self.n_out if len(self.y_mean.shape) == 1 else self.n_out * self.y_mean.shape[1]))
-        # self.fc_in = nn.Sequential(nn.Linear(X_means.shape[0], n_out))
-        self.softplus = nn.Softplus()
+        
         
     def forward(self, x):
         fout = self.fc_in(x)
@@ -42,42 +41,34 @@ class QuantileNetworkModule(nn.Module):
         if len(self.y_mean.shape) != 1:
             fout = fout.reshape((-1, self.y_mean.shape[1], self.n_out))
 
-        # If we only have 1 quantile, no need to do anything else
-        if self.n_out == 1:
-            return fout
+        return fout
 
-        # Enforce monotonicity of the quantiles
-        return torch.cat((fout[...,0:1], fout[...,0:1] + torch.cumsum(self.softplus(fout[...,1:]), dim=-1)), dim=-1)
-        
     def predict(self, X):
         self.eval()
         self.zero_grad()
         tX = autograd.Variable(torch.FloatTensor((X - self.X_means) / self.X_stds), requires_grad=False)
         fout = self.forward(tX)
-        return fout.data.numpy() * self.y_std[...,None] + self.y_mean[...,None]
+        z = fout.data.numpy() * self.y_std[...,None] + self.y_mean[...,None]
+        return z
 
-class QuantileNetwork:
-    def __init__(self, quantiles, loss='marginal'):
-        self.quantiles = quantiles
-        self.label = 'Quantile Network'
-        self.filename = 'nn'
-        self.lossfn = loss
-        if self.lossfn != 'marginal':
-            self.label += f' ({self.lossfn})'
+class SqErrNetwork:
+    def __init__(self):
+        self.label = 'SqErr Network'
+        self.filename = 'sqerr'
 
     def fit(self, X, y):
-        self.model = fit_quantiles(X, y, quantiles=self.quantiles, lossfn=self.lossfn)
+        self.model = fit_nn(X, y)
 
     def predict(self, X):
         return self.model.predict(X)
 
-def fit_quantiles(X, y, quantiles=0.5, lossfn = 'marginal',
-                    nepochs=100, val_pct=0.1,
-                    batch_size=None, target_batch_pct=0.01,
-                    min_batch_size=20, max_batch_size=100,
-                    verbose=False, lr=1e-1, weight_decay=0.0, patience=5,
-                    init_model=None, splits=None, file_checkpoints=True,
-                    clip_gradients=False, **kwargs):
+def fit_nn(X, y, 
+            nepochs=100, val_pct=0.1,
+            batch_size=None, target_batch_pct=0.01,
+            min_batch_size=20, max_batch_size=100,
+            verbose=False, lr=1e-1, weight_decay=0.0, patience=5,
+            init_model=None, splits=None, file_checkpoints=True,
+            clip_gradients=False, **kwargs):
     if file_checkpoints:
         import uuid
         tmp_file = '/tmp/tmp_file_' + str(uuid.uuid4())
@@ -105,14 +96,8 @@ def fit_quantiles(X, y, quantiles=0.5, lossfn = 'marginal',
     else:
         train_indices, validate_indices = splits
 
-    if np.isscalar(quantiles):
-        quantiles = np.array([quantiles])
-    if lossfn == 'geometric':
-        quantiles = 2*quantiles - 1
-    tquantiles = autograd.Variable(torch.FloatTensor(quantiles), requires_grad=False)
-
     # Initialize the model
-    model = QuantileNetworkModule(Xmean, Xstd, ymean, ystd, quantiles.shape[0]) if init_model is None else init_model
+    model = SqErrNetworkModule(Xmean, Xstd, ymean, ystd) if init_model is None else init_model
 
     # Save the model to file
     if file_checkpoints:
@@ -132,31 +117,11 @@ def fit_quantiles(X, y, quantiles=0.5, lossfn = 'marginal',
     if verbose:
         print('ymax and min:', tY.max(), tY.min())
 
-    # Univariate quantile loss
-    def quantile_loss(yhat, tidx):
-        z = tY[tidx,None] - yhat
-        return torch.max(tquantiles[None]*z, (tquantiles[None] - 1)*z)
-
-    # Marginal quantile loss for multivariate response
-    def marginal_loss(yhat, tidx):
-        z = tY[tidx,:,None] - yhat
-        return torch.max(tquantiles[None,None]*z, (tquantiles[None,None] - 1)*z)
-
-    # Geometric quantile loss -- uses a Euclidean unit ball definition of multivariate quantiles
-    def geometric_loss(yhat, tidx):
-        z = tY[tidx,:,None] - yhat
-        return torch.norm(z, dim=1) + (z * tquantiles[None,None]).sum(dim=1)
-
-    # Create the quantile loss function
-    if len(tY.shape) == 1 or tY.shape[1] == 1:
-        lossfn = quantile_loss
-    elif lossfn == 'marginal':
-        print('Using marginal loss')
-        lossfn = marginal_loss
-    elif lossfn == 'geometric':
-        print('Using geometric loss')
-        lossfn = geometric_loss
-            
+    # Create the squared error loss function
+    def sqerr_loss(yhat, tidx):
+        if len(yhat.shape) > 1:
+            return (tY[tidx,None,None] - yhat)**2
+        return (tY[tidx,None] - yhat)**2
 
     # Train the model
     for epoch in range(nepochs):
@@ -177,11 +142,11 @@ def fit_quantiles(X, y, quantiles=0.5, lossfn = 'marginal',
             # Reset the gradient
             model.zero_grad()
 
-            # Run the model and get the predicted quantiles
+            # Run the model and get the predicted mean
             yhat = model(tX[tidx])
             
-            # Loss for all quantiles
-            loss = lossfn(yhat, tidx).mean()
+            # Loss for optimizing
+            loss = sqerr_loss(yhat, tidx).mean()
 
             # Calculate gradients
             loss.backward()
@@ -218,7 +183,7 @@ def fit_quantiles(X, y, quantiles=0.5, lossfn = 'marginal',
             yhat = model(tX[tidx])
 
             # Track the loss
-            validate_loss += lossfn(yhat, tidx).sum()
+            validate_loss += sqerr_loss(yhat, tidx).sum()
 
         train_losses[epoch] = train_loss.data.numpy() / float(len(train_indices))
         val_losses[epoch] = validate_loss.data.numpy() / float(len(validate_indices))
@@ -237,12 +202,12 @@ def fit_quantiles(X, y, quantiles=0.5, lossfn = 'marginal',
                 print('Network went to NaN. Readjusting learning rate down by 50%')
             if file_checkpoints:
                 os.remove(tmp_file)
-            return fit_quantiles(X, y, quantiles=quantiles, lossfn=lossfn,
-                    nepochs=nepochs, val_pct=val_pct,
-                    batch_size=batch_size, target_batch_pct=target_batch_pct,
-                    min_batch_size=min_batch_size, max_batch_size=max_batch_size,
-                    verbose=verbose, lr=lr*0.5, weight_decay=weight_decay, patience=patience,
-                    init_model=init_model, splits=splits, file_checkpoints=file_checkpoints,  **kwargs)
+            return fit_nn(X, y,
+                        nepochs=nepochs, val_pct=val_pct,
+                        batch_size=batch_size, target_batch_pct=target_batch_pct,
+                        min_batch_size=min_batch_size, max_batch_size=max_batch_size,
+                        verbose=verbose, lr=lr*0.5, weight_decay=weight_decay, patience=patience,
+                        init_model=init_model, splits=splits, file_checkpoints=file_checkpoints,  **kwargs)
 
         # Check if we are currently have the best held-out log-likelihood
         if epoch == 0 or val_losses[epoch] <= best_loss:

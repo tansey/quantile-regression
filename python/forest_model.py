@@ -1,4 +1,7 @@
 import numpy as np
+import six
+import sys
+sys.modules['sklearn.externals.six'] = six
 from skgarden import RandomForestQuantileRegressor
 
 class QuantileForest:
@@ -7,6 +10,8 @@ class QuantileForest:
         self.model = RandomForestQuantileRegressor(random_state=0,
                                              min_samples_split=min_samples_split,
                                              n_estimators=n_estimators)
+        self.label = 'Quantile Forest'
+        self.filename = 'rf'
 
 
     def fit(self, X, y):
