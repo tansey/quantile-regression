@@ -6,3 +6,9 @@ Quantile regression with ReLU Networks: Estimators and minimax rates
 O.H. Madrid Padilla, W. Tansey, and Y. Chen
 arxiv link tbd
 ```
+
+The code in `python/neural_model.py` implements a deep neural network quantile regression model for both univariate and multivariate responses.
+
+## Requirements
+
+Everything is implemented in `python3` with `pytorch` plus plotting with `seaborn` --- usual dependencies apply.
